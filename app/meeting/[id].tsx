@@ -1,0 +1,739 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ScrollView,
+  Modal,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Audio } from 'expo-av';
+import {
+  ArrowLeft,
+  Mic,
+  Pause,
+  Square,
+  Play,
+  Calendar,
+  Clock,
+  Users,
+  FileAudio,
+  ChevronDown,
+  ChevronUp,
+  X,
+} from 'lucide-react-native';
+import { StatusTracker } from '../../src/components/StatusTracker';
+import { supabase } from '../../src/lib/supabase';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type RecordingState = 'idle' | 'recording' | 'paused';
+
+interface MeetingRow {
+  id: string;
+  external_id: string | null;
+  title: string;
+  date: string;
+  time: string;
+  status: 'Agendada' | 'Em Andamento' | 'Concluída';
+  participants: string[];
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RecordingRow {
+  id: string;
+  meeting_id: string;
+  audio_url: string;
+  duration: number | null;
+  file_path: string;
+  created_at: string;
+}
+
+interface TranscriptionRow {
+  id: string;
+  meeting_id: string;
+  transcription_text: string;
+  summary: string;
+  is_current: boolean;
+  created_at: string;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatMs(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
+  const s = (totalSec % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function formatDatePtBR(isoString: string): string {
+  return new Date(isoString).toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+const GEMINI_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+
+async function uploadBlobToGemini(blob: Blob): Promise<string> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'X-Goog-Upload-Protocol': 'raw', 'Content-Type': 'audio/m4a' },
+      body: blob,
+    }
+  );
+  const data = await res.json();
+  return data.file.uri as string;
+}
+
+async function generateConsolidatedTranscription(
+  fileUris: string[]
+): Promise<{ text: string; summary: string }> {
+  const audioParts = fileUris.map((uri) => ({
+    fileData: { mimeType: 'audio/m4a', fileUri: uri },
+  }));
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: 'Os arquivos de áudio a seguir são partes de uma mesma reunião. Transcreva todo o conteúdo de forma consolidada e contínua. Ao final, forneça um resumo executivo em 3-5 frases. Use o formato:\nTRANSCRICAO:\n<texto completo>\n\nRESUMO:\n<resumo>',
+              },
+              ...audioParts,
+            ],
+          },
+        ],
+      }),
+    }
+  );
+  const data = await res.json();
+  const content: string = data.candidates[0].content.parts[0].text;
+  const [rawTranscricao, rawResumo] = content.split('RESUMO:');
+  return {
+    text: rawTranscricao.replace('TRANSCRICAO:', '').trim(),
+    summary: rawResumo?.trim() ?? '',
+  };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export default function MeetingDetails() {
+  const { id: meetingId } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+
+  // Meeting
+  const [meeting, setMeeting] = useState<MeetingRow | null>(null);
+  const [loadingMeeting, setLoadingMeeting] = useState(true);
+
+  // Recording
+  const [recordingState, setRecordingState] = useState<RecordingState>('idle');
+  const [activeRecording, setActiveRecording] = useState<Audio.Recording | null>(null);
+
+  // Data
+  const [recordings, setRecordings] = useState<RecordingRow[]>([]);
+  const [currentTranscription, setCurrentTranscription] = useState<TranscriptionRow | null>(null);
+  const [allTranscriptions, setAllTranscriptions] = useState<TranscriptionRow[]>([]);
+
+  // UI flags
+  const [isUploading, setIsUploading] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+
+  // Audio player modal
+  const [playerRecording, setPlayerRecording] = useState<RecordingRow | null>(null);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [positionMs, setPositionMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(0);
+
+  // History modal
+  const [showHistory, setShowHistory] = useState(false);
+
+  // ── Load ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  const loadAll = async () => {
+    setLoadingMeeting(true);
+    const { data } = await supabase
+      .from('meetings')
+      .select('*')
+      .eq('id', meetingId)
+      .single();
+    setMeeting(data ?? null);
+    setLoadingMeeting(false);
+    if (data) {
+      loadRecordings(data.id);
+      loadCurrentTranscription(data.id);
+    }
+  };
+
+  const loadRecordings = async (id: string) => {
+    const { data } = await supabase
+      .from('recordings')
+      .select('*')
+      .eq('meeting_id', id)
+      .order('created_at', { ascending: false });
+    if (data) setRecordings(data);
+  };
+
+  const loadCurrentTranscription = async (id: string) => {
+    const { data } = await supabase
+      .from('transcriptions')
+      .select('*')
+      .eq('meeting_id', id)
+      .eq('is_current', true)
+      .single();
+    if (data) setCurrentTranscription(data);
+  };
+
+  // ── Recording ─────────────────────────────────────────────────────────────
+
+  const handleStartRecording = async () => {
+    const perm = await Audio.requestPermissionsAsync();
+    if (perm.status !== 'granted') {
+      Alert.alert('Permissão negada', 'Autorize o acesso ao microfone nas configurações.');
+      return;
+    }
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+    const { recording } = await Audio.Recording.createAsync(
+      Audio.RecordingOptionsPresets.HIGH_QUALITY
+    );
+    setActiveRecording(recording);
+    setRecordingState('recording');
+  };
+
+  const handlePauseRecording = async () => {
+    if (!activeRecording) return;
+    await activeRecording.pauseAsync();
+    setRecordingState('paused');
+  };
+
+  const handleResumeRecording = async () => {
+    if (!activeRecording) return;
+    await activeRecording.startAsync();
+    setRecordingState('recording');
+  };
+
+  const handleStopRecording = async () => {
+    if (!activeRecording) return;
+    const status = await activeRecording.getStatusAsync();
+    await activeRecording.stopAndUnloadAsync();
+    const uri = activeRecording.getURI();
+    setActiveRecording(null);
+    setRecordingState('idle');
+    if (uri && meeting) {
+      await saveRecordingToSupabase(uri, (status as any).durationMillis ?? 0);
+    }
+  };
+
+  // ── Save recording ────────────────────────────────────────────────────────
+
+  const saveRecordingToSupabase = async (uri: string, durationMillis: number) => {
+    if (!meeting) return;
+    setIsUploading(true);
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const filePath = `${meeting.id}/${Date.now()}.m4a`;
+
+      await supabase.storage
+        .from('recordings')
+        .upload(filePath, blob, { contentType: 'audio/m4a' });
+
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from('recordings').getPublicUrl(filePath);
+
+      const { data: rec } = await supabase
+        .from('recordings')
+        .insert({
+          meeting_id: meeting.id,
+          audio_url: publicUrl,
+          file_path: filePath,
+          duration: Math.round(durationMillis / 1000),
+        })
+        .select()
+        .single();
+
+      if (rec) setRecordings((prev) => [rec, ...prev]);
+
+      Alert.alert(
+        'Gravação salva',
+        currentTranscription
+          ? 'Já existe uma transcrição ativa. Deseja reprocessar com todas as gravações?'
+          : 'Deseja transcrever agora?',
+        [
+          { text: 'Agora não', style: 'cancel' },
+          {
+            text: currentTranscription ? 'Reprocessar' : 'Transcrever',
+            onPress: () => transcribeAll(),
+          },
+        ]
+      );
+    } catch (err) {
+      Alert.alert('Erro', 'Não foi possível salvar a gravação.');
+      console.error(err);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // ── Transcribe ────────────────────────────────────────────────────────────
+
+  const transcribeAll = async () => {
+    if (!meeting) return;
+    setIsTranscribing(true);
+    try {
+      const { data: recs } = await supabase
+        .from('recordings')
+        .select('audio_url, file_path')
+        .eq('meeting_id', meeting.id)
+        .order('created_at', { ascending: true });
+
+      if (!recs || recs.length === 0) return;
+
+      const geminiFileUris: string[] = [];
+      for (const rec of recs) {
+        const audioResponse = await fetch(rec.audio_url);
+        const geminiBlob = await audioResponse.blob();
+
+        const fileUri = await uploadBlobToGemini(geminiBlob);
+        geminiFileUris.push(fileUri);
+      }
+
+      const { text, summary } = await generateConsolidatedTranscription(geminiFileUris);
+
+      await supabase
+        .from('transcriptions')
+        .update({ is_current: false })
+        .eq('meeting_id', meeting.id);
+
+      const { data: tx } = await supabase
+        .from('transcriptions')
+        .insert({
+          meeting_id: meeting.id,
+          transcription_text: text,
+          summary,
+          is_current: true,
+        })
+        .select()
+        .single();
+
+      if (tx) setCurrentTranscription(tx);
+
+      const { data: history } = await supabase
+        .from('transcriptions')
+        .select('*')
+        .eq('meeting_id', meeting.id)
+        .order('created_at', { ascending: false });
+      if (history) setAllTranscriptions(history);
+    } catch (err) {
+      Alert.alert('Erro', 'Não foi possível gerar a transcrição.');
+      console.error(err);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  // ── Audio player ──────────────────────────────────────────────────────────
+
+  const openPlayerModal = async (rec: RecordingRow) => {
+    setPlayerRecording(rec);
+    const { sound: s } = await Audio.Sound.createAsync(
+      { uri: rec.audio_url },
+      { shouldPlay: false },
+      (status) => {
+        if (status.isLoaded) {
+          setPositionMs(status.positionMillis ?? 0);
+          setDurationMs(status.durationMillis ?? 0);
+          if (status.didJustFinish) setIsPlaying(false);
+        }
+      }
+    );
+    setSound(s);
+  };
+
+  const closePlayerModal = async () => {
+    if (sound) {
+      await sound.unloadAsync();
+      setSound(null);
+    }
+    setPlayerRecording(null);
+    setIsPlaying(false);
+    setPositionMs(0);
+    setDurationMs(0);
+  };
+
+  const togglePlay = async () => {
+    if (!sound) return;
+    if (isPlaying) {
+      await sound.pauseAsync();
+    } else {
+      await sound.playAsync();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  // ── History modal ─────────────────────────────────────────────────────────
+
+  const openHistoryModal = async () => {
+    if (!meeting) return;
+    const { data } = await supabase
+      .from('transcriptions')
+      .select('*')
+      .eq('meeting_id', meeting.id)
+      .order('created_at', { ascending: false });
+    if (data) setAllTranscriptions(data);
+    setShowHistory(true);
+  };
+
+  // ── Early returns ─────────────────────────────────────────────────────────
+
+  if (loadingMeeting) {
+    return (
+      <View className="flex-1 bg-black items-center justify-center">
+        <ActivityIndicator size="large" color="#00FF88" />
+      </View>
+    );
+  }
+
+  if (!meeting) {
+    return (
+      <View className="flex-1 bg-black items-center justify-center px-6">
+        <Text className="text-white text-lg font-interSemibold mb-2">Reunião não encontrada</Text>
+        <Text className="text-neutral-400 font-inter text-center mb-6">
+          Não foi possível carregar os dados desta reunião.
+        </Text>
+        <TouchableOpacity onPress={() => router.back()}>
+          <Text className="text-[#00FF88] font-interMedium">Voltar</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const historyCount = allTranscriptions.length;
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  return (
+    <View className="flex-1 bg-black">
+      {/* Header */}
+      <View className="flex-row items-center px-5 pt-12 pb-4 border-b border-neutral-800">
+        <TouchableOpacity onPress={() => router.back()} className="mr-4">
+          <ArrowLeft size={24} color="#fff" />
+        </TouchableOpacity>
+        <Text className="text-white text-lg font-interSemibold">Detalhes da Reunião</Text>
+      </View>
+
+      <ScrollView className="flex-1 px-5 pt-6">
+        {/* 1. Meeting info */}
+        <Text className="text-white text-2xl font-interBold mb-4">{meeting.title}</Text>
+
+        <View className="bg-neutral-900 rounded-2xl p-4 mb-6 border border-neutral-800">
+          <View className="flex-row items-center mb-3">
+            <Calendar size={18} color="#9ca3af" />
+            <Text className="text-neutral-300 font-inter ml-3">
+              {new Date(meeting.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
+            </Text>
+          </View>
+          <View className="flex-row items-center mb-3">
+            <Clock size={18} color="#9ca3af" />
+            <Text className="text-neutral-300 font-inter ml-3">{meeting.time}</Text>
+          </View>
+          <View className="flex-row items-start">
+            <Users size={18} color="#9ca3af" style={{ marginTop: 2 }} />
+            <Text className="text-neutral-300 font-inter flex-1 leading-5 ml-3">
+              {meeting.participants.join(', ')}
+            </Text>
+          </View>
+        </View>
+
+        {/* 2. Status tracker */}
+        <View className="mb-6">
+          <StatusTracker status={meeting.status} />
+        </View>
+
+        {/* 3. Transcription card */}
+        {currentTranscription && (
+          <View className="bg-neutral-900 rounded-2xl p-5 mb-6 border border-neutral-800">
+            <Text className="text-white font-interSemibold mb-3">Resumo Executivo</Text>
+            <Text className="text-neutral-400 font-inter leading-6">
+              {currentTranscription.summary}
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => setTranscriptExpanded(!transcriptExpanded)}
+              className="flex-row items-center mt-4"
+              activeOpacity={0.7}
+            >
+              <Text className="text-[#00FF88] font-interMedium mr-1">
+                {transcriptExpanded ? 'Ocultar transcrição' : 'Ver transcrição completa'}
+              </Text>
+              {transcriptExpanded ? (
+                <ChevronUp size={16} color="#00FF88" />
+              ) : (
+                <ChevronDown size={16} color="#00FF88" />
+              )}
+            </TouchableOpacity>
+
+            {transcriptExpanded && (
+              <Text className="text-neutral-400 font-inter leading-6 mt-3">
+                {currentTranscription.transcription_text}
+              </Text>
+            )}
+
+            {historyCount > 1 && (
+              <TouchableOpacity onPress={openHistoryModal} className="mt-4" activeOpacity={0.7}>
+                <Text className="text-neutral-500 font-inter text-sm">
+                  Ver versões anteriores ({historyCount - 1})
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* 4. Recording controls */}
+        <View className="items-center mb-6">
+          {(isUploading || isTranscribing) && (
+            <View className="flex-row items-center mb-3">
+              <ActivityIndicator size="small" color="#00FF88" />
+              <Text className="text-neutral-400 font-inter ml-2 text-sm">
+                {isUploading ? 'Salvando gravação...' : 'Gerando transcrição...'}
+              </Text>
+            </View>
+          )}
+
+          {recordingState === 'idle' && (
+            <TouchableOpacity
+              onPress={handleStartRecording}
+              activeOpacity={0.8}
+              className="w-24 h-24 rounded-full items-center justify-center bg-[#00FF88]/20 border-2 border-[#00FF88]"
+            >
+              <Mic size={32} color="#00FF88" />
+            </TouchableOpacity>
+          )}
+
+          {recordingState !== 'idle' && (
+            <View className="flex-row items-center gap-4">
+              {recordingState === 'recording' ? (
+                <TouchableOpacity
+                  onPress={handlePauseRecording}
+                  activeOpacity={0.8}
+                  className="w-20 h-20 rounded-full items-center justify-center bg-yellow-500/20 border-2 border-yellow-500"
+                >
+                  <Pause size={28} color="#eab308" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={handleResumeRecording}
+                  activeOpacity={0.8}
+                  className="w-20 h-20 rounded-full items-center justify-center bg-[#00FF88]/20 border-2 border-[#00FF88]"
+                >
+                  <Play size={28} color="#00FF88" />
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                onPress={handleStopRecording}
+                activeOpacity={0.8}
+                className="w-20 h-20 rounded-full items-center justify-center bg-red-500/20 border-2 border-red-500"
+              >
+                <Square size={28} color="#ef4444" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <Text className="text-neutral-400 font-inter text-sm mt-3">
+            {recordingState === 'idle' && 'Gravar reunião'}
+            {recordingState === 'recording' && 'Gravando...'}
+            {recordingState === 'paused' && 'Pausado'}
+          </Text>
+        </View>
+
+        {/* 5. Transcribe button */}
+        {recordings.length > 0 && (
+          <TouchableOpacity
+            onPress={() => transcribeAll()}
+            disabled={isTranscribing || isUploading}
+            activeOpacity={0.8}
+            className="bg-[#00FF88]/10 border border-[#00FF88] rounded-2xl py-4 items-center mb-6"
+          >
+            {isTranscribing ? (
+              <View className="flex-row items-center">
+                <ActivityIndicator size="small" color="#00FF88" />
+                <Text className="text-[#00FF88] font-interSemibold ml-2">Transcrevendo...</Text>
+              </View>
+            ) : (
+              <Text className="text-[#00FF88] font-interSemibold">
+                {currentTranscription ? 'Reprocessar transcrição' : 'Transcrever'}
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {/* 6. Recordings list */}
+        {recordings.length > 0 && (
+          <View className="mb-8">
+            <Text className="text-white font-interSemibold mb-3">Gravações</Text>
+            {recordings.map((rec) => (
+              <TouchableOpacity
+                key={rec.id}
+                onPress={() => openPlayerModal(rec)}
+                activeOpacity={0.8}
+                className="bg-neutral-900 rounded-xl p-4 mb-3 border border-neutral-800 flex-row items-center"
+              >
+                <View className="w-10 h-10 rounded-full bg-neutral-800 items-center justify-center mr-3">
+                  <FileAudio size={20} color="#9ca3af" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-white font-interMedium text-sm">
+                    {formatDatePtBR(rec.created_at)}
+                  </Text>
+                  {rec.duration != null && (
+                    <Text className="text-neutral-500 font-inter text-xs mt-0.5">
+                      {formatMs(rec.duration * 1000)}
+                    </Text>
+                  )}
+                </View>
+                <Play size={16} color="#9ca3af" />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+
+      {/* ── Audio Player Modal ─────────────────────────────────────────────── */}
+      <Modal
+        visible={playerRecording !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={closePlayerModal}
+      >
+        <View className="flex-1 justify-end bg-black/60">
+          <View className="bg-neutral-900 rounded-t-3xl p-6">
+            {/* Close */}
+            <View className="flex-row items-center justify-between mb-5">
+              <Text className="text-white font-interSemibold text-base">
+                {playerRecording ? formatDatePtBR(playerRecording.created_at) : ''}
+              </Text>
+              <TouchableOpacity onPress={closePlayerModal}>
+                <X size={22} color="#9ca3af" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Progress bar */}
+            <View className="h-1 bg-neutral-700 rounded-full mb-2">
+              <View
+                className="h-1 bg-[#00FF88] rounded-full"
+                style={{ width: durationMs > 0 ? `${(positionMs / durationMs) * 100}%` : '0%' }}
+              />
+            </View>
+            <View className="flex-row justify-between mb-5">
+              <Text className="text-neutral-500 font-inter text-xs">{formatMs(positionMs)}</Text>
+              <Text className="text-neutral-500 font-inter text-xs">{formatMs(durationMs)}</Text>
+            </View>
+
+            {/* Play/Pause */}
+            <View className="items-center mb-6">
+              <TouchableOpacity
+                onPress={togglePlay}
+                activeOpacity={0.8}
+                className="w-16 h-16 rounded-full items-center justify-center bg-[#00FF88]/20 border-2 border-[#00FF88]"
+              >
+                {isPlaying ? (
+                  <Pause size={24} color="#00FF88" />
+                ) : (
+                  <Play size={24} color="#00FF88" />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Transcription for this meeting */}
+            {currentTranscription && (
+              <View className="border-t border-neutral-800 pt-4">
+                <Text className="text-white font-interSemibold mb-2">Resumo</Text>
+                <Text className="text-neutral-400 font-inter text-sm leading-5">
+                  {currentTranscription.summary}
+                </Text>
+                {currentTranscription.transcription_text.length > 0 && (
+                  <>
+                    <Text className="text-white font-interSemibold mt-4 mb-2">Transcrição</Text>
+                    <ScrollView className="max-h-40">
+                      <Text className="text-neutral-400 font-inter text-sm leading-5">
+                        {currentTranscription.transcription_text}
+                      </Text>
+                    </ScrollView>
+                  </>
+                )}
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── History Modal ──────────────────────────────────────────────────── */}
+      <Modal
+        visible={showHistory}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowHistory(false)}
+      >
+        <View className="flex-1 justify-end bg-black/60">
+          <View className="bg-neutral-900 rounded-t-3xl p-6" style={{ maxHeight: '80%' }}>
+            <View className="flex-row items-center justify-between mb-5">
+              <Text className="text-white font-interSemibold text-base">
+                Histórico de transcrições
+              </Text>
+              <TouchableOpacity onPress={() => setShowHistory(false)}>
+                <X size={22} color="#9ca3af" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView>
+              {allTranscriptions.map((tx, index) => (
+                <View
+                  key={tx.id}
+                  className="border-b border-neutral-800 pb-4 mb-4"
+                >
+                  <View className="flex-row items-center mb-1">
+                    <Text className="text-neutral-400 font-inter text-xs">
+                      {formatDatePtBR(tx.created_at)}
+                    </Text>
+                    {tx.is_current && (
+                      <View className="ml-2 bg-[#00FF88]/20 rounded px-2 py-0.5">
+                        <Text className="text-[#00FF88] text-xs font-interMedium">atual</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text className="text-neutral-300 font-inter text-sm leading-5">
+                    {tx.transcription_text.slice(0, 120)}
+                    {tx.transcription_text.length > 120 ? '...' : ''}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
