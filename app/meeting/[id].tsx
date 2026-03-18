@@ -26,6 +26,7 @@ import {
 } from 'lucide-react-native';
 import { StatusTracker } from '../../src/components/StatusTracker';
 import { supabase } from '../../src/lib/supabase';
+import { File as ExpoFile } from 'expo-file-system';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -81,55 +82,65 @@ function formatDatePtBR(isoString: string): string {
   });
 }
 
-const GEMINI_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+const GROQ_KEY = process.env.EXPO_PUBLIC_GROQ_API_KEY;
 
-async function uploadBlobToGemini(blob: Blob): Promise<string> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'X-Goog-Upload-Protocol': 'raw', 'Content-Type': 'audio/m4a' },
-      body: blob,
-    }
-  );
+const transcribeAudioWithGroq = async (audioUrl: string): Promise<string> => {
+  const audioResponse = await fetch(audioUrl);
+  const audioBlob = await audioResponse.blob();
+
+  const formData = new FormData();
+  formData.append('file', audioBlob, 'audio.m4a');
+  formData.append('model', 'whisper-large-v3-turbo');
+  formData.append('language', 'pt');
+  formData.append('response_format', 'text');
+
+  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${GROQ_KEY}` },
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error('Groq Whisper error: ' + JSON.stringify(err));
+  }
+
+  return await res.text();
+};
+
+const generateSummaryWithGroq = async (transcription: string): Promise<string> => {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${GROQ_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Você é um assistente especializado em reuniões corporativas brasileiras. Gere resumos executivos concisos e objetivos em português.',
+        },
+        {
+          role: 'user',
+          content: `Com base nesta transcrição de reunião, gere um RESUMO EXECUTIVO em 3-5 frases destacando: principais tópicos discutidos, decisões tomadas e próximos passos.\n\nTranscrição:\n${transcription}`,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 512,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error('Groq Llama error: ' + JSON.stringify(err));
+  }
+
   const data = await res.json();
-  return data.file.uri as string;
-}
-
-async function generateConsolidatedTranscription(
-  fileUris: string[]
-): Promise<{ text: string; summary: string }> {
-  const audioParts = fileUris.map((uri) => ({
-    fileData: { mimeType: 'audio/m4a', fileUri: uri },
-  }));
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text: 'Os arquivos de áudio a seguir são partes de uma mesma reunião. Transcreva todo o conteúdo de forma consolidada e contínua. Ao final, forneça um resumo executivo em 3-5 frases. Use o formato:\nTRANSCRICAO:\n<texto completo>\n\nRESUMO:\n<resumo>',
-              },
-              ...audioParts,
-            ],
-          },
-        ],
-      }),
-    }
-  );
-  const data = await res.json();
-  const content: string = data.candidates[0].content.parts[0].text;
-  const [rawTranscricao, rawResumo] = content.split('RESUMO:');
-  return {
-    text: rawTranscricao.replace('TRANSCRICAO:', '').trim(),
-    summary: rawResumo?.trim() ?? '',
-  };
-}
+  return data.choices[0].message.content;
+};
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -164,6 +175,7 @@ export default function MeetingDetails() {
 
   // History modal
   const [showHistory, setShowHistory] = useState(false);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
@@ -183,7 +195,17 @@ export default function MeetingDetails() {
     if (data) {
       loadRecordings(data.id);
       loadCurrentTranscription(data.id);
+      loadAllTranscriptions(data.id);
     }
+  };
+
+  const loadAllTranscriptions = async (id: string) => {
+    const { data } = await supabase
+      .from('transcriptions')
+      .select('*')
+      .eq('meeting_id', id)
+      .order('created_at', { ascending: false });
+    if (data) setAllTranscriptions(data);
   };
 
   const loadRecordings = async (id: string) => {
@@ -251,17 +273,17 @@ export default function MeetingDetails() {
     if (!meeting) return;
     setIsUploading(true);
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
       const filePath = `${meeting.id}/${Date.now()}.m4a`;
+      const audioFile = new ExpoFile(uri);
+      const audioBuffer = await audioFile.arrayBuffer();
 
-      await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('recordings')
-        .upload(filePath, blob, { contentType: 'audio/m4a' });
+        .upload(filePath, audioBuffer, { contentType: 'audio/m4a' });
 
-      const {
-        data: { publicUrl },
-      } = supabase.storage.from('recordings').getPublicUrl(filePath);
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage.from('recordings').getPublicUrl(filePath);
 
       const { data: rec } = await supabase
         .from('recordings')
@@ -305,22 +327,20 @@ export default function MeetingDetails() {
     try {
       const { data: recs } = await supabase
         .from('recordings')
-        .select('audio_url, file_path')
+        .select('audio_url')
         .eq('meeting_id', meeting.id)
         .order('created_at', { ascending: true });
 
       if (!recs || recs.length === 0) return;
 
-      const geminiFileUris: string[] = [];
+      const parts: string[] = [];
       for (const rec of recs) {
-        const audioResponse = await fetch(rec.audio_url);
-        const geminiBlob = await audioResponse.blob();
-
-        const fileUri = await uploadBlobToGemini(geminiBlob);
-        geminiFileUris.push(fileUri);
+        const text = await transcribeAudioWithGroq(rec.audio_url);
+        parts.push(text);
       }
 
-      const { text, summary } = await generateConsolidatedTranscription(geminiFileUris);
+      const fullTranscription = parts.join('\n\n');
+      const summary = await generateSummaryWithGroq(fullTranscription);
 
       await supabase
         .from('transcriptions')
@@ -331,7 +351,7 @@ export default function MeetingDetails() {
         .from('transcriptions')
         .insert({
           meeting_id: meeting.id,
-          transcription_text: text,
+          transcription_text: fullTranscription,
           summary,
           is_current: true,
         })
@@ -357,19 +377,36 @@ export default function MeetingDetails() {
   // ── Audio player ──────────────────────────────────────────────────────────
 
   const openPlayerModal = async (rec: RecordingRow) => {
-    setPlayerRecording(rec);
-    const { sound: s } = await Audio.Sound.createAsync(
-      { uri: rec.audio_url },
-      { shouldPlay: false },
-      (status) => {
-        if (status.isLoaded) {
-          setPositionMs(status.positionMillis ?? 0);
-          setDurationMs(status.durationMillis ?? 0);
-          if (status.didJustFinish) setIsPlaying(false);
+    try {
+      setPlayerRecording(rec);
+      setPositionMs(0);
+      setDurationMs(0);
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+
+      const { sound: s } = await Audio.Sound.createAsync(
+        { uri: rec.audio_url },
+        { shouldPlay: false, progressUpdateIntervalMillis: 100 },
+        (status) => {
+          if (status.isLoaded) {
+            setPositionMs(status.positionMillis ?? 0);
+            if (status.durationMillis) setDurationMs(status.durationMillis);
+            if (status.didJustFinish) {
+              setIsPlaying(false);
+              setPositionMs(0);
+            }
+          }
         }
-      }
-    );
-    setSound(s);
+      );
+      setSound(s);
+    } catch (err) {
+      console.error('Erro ao abrir player:', err);
+      Alert.alert('Erro', 'Não foi possível carregar o áudio.');
+      setPlayerRecording(null);
+    }
   };
 
   const closePlayerModal = async () => {
@@ -709,27 +746,59 @@ export default function MeetingDetails() {
             </View>
 
             <ScrollView>
-              {allTranscriptions.map((tx, index) => (
-                <View
-                  key={tx.id}
-                  className="border-b border-neutral-800 pb-4 mb-4"
-                >
-                  <View className="flex-row items-center mb-1">
-                    <Text className="text-neutral-400 font-inter text-xs">
-                      {formatDatePtBR(tx.created_at)}
+              {allTranscriptions.map((tx) => {
+                const isExpanded = expandedHistoryId === tx.id;
+                return (
+                  <View key={tx.id} className="border-b border-neutral-800 pb-4 mb-4">
+                    <View className="flex-row items-center mb-1">
+                      <Text className="text-neutral-400 font-inter text-xs">
+                        {formatDatePtBR(tx.created_at)}
+                      </Text>
+                      {tx.is_current && (
+                        <View className="ml-2 bg-[#00FF88]/20 rounded px-2 py-0.5">
+                          <Text className="text-[#00FF88] text-xs font-interMedium">atual</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <Text
+                      className="text-neutral-300 font-inter text-sm leading-5"
+                      numberOfLines={isExpanded ? undefined : 2}
+                    >
+                      {tx.transcription_text}
                     </Text>
-                    {tx.is_current && (
-                      <View className="ml-2 bg-[#00FF88]/20 rounded px-2 py-0.5">
-                        <Text className="text-[#00FF88] text-xs font-interMedium">atual</Text>
+
+                    {isExpanded && (
+                      <View className="mt-3">
+                        <View className="h-px bg-neutral-700 mb-3" />
+                        <Text className="text-neutral-500 font-interMedium text-xs uppercase mb-1">
+                          Resumo
+                        </Text>
+                        <Text className="text-neutral-300 font-inter text-sm leading-5 mb-3">
+                          {tx.summary}
+                        </Text>
+                        <Text className="text-neutral-500 font-interMedium text-xs uppercase mb-1">
+                          Transcrição completa
+                        </Text>
+                        <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
+                          <Text className="text-neutral-300 font-inter text-sm leading-5">
+                            {tx.transcription_text}
+                          </Text>
+                        </ScrollView>
                       </View>
                     )}
+
+                    <TouchableOpacity
+                      className="mt-2 self-start"
+                      onPress={() => setExpandedHistoryId(isExpanded ? null : tx.id)}
+                    >
+                      <Text className="text-[#00FF88] font-interMedium text-xs">
+                        {isExpanded ? 'Recolher' : 'Ver completo'}
+                      </Text>
+                    </TouchableOpacity>
                   </View>
-                  <Text className="text-neutral-300 font-inter text-sm leading-5">
-                    {tx.transcription_text.slice(0, 120)}
-                    {tx.transcription_text.length > 120 ? '...' : ''}
-                  </Text>
-                </View>
-              ))}
+                );
+              })}
             </ScrollView>
           </View>
         </View>
