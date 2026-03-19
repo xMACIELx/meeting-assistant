@@ -10,13 +10,13 @@ interface MeetingCardProps {
 }
 
 const statusColors: Record<string, string> = {
-  'Agendada': '#6b7280',
+  'Agendada': '#F59E0B',
   'Em Andamento': '#3b82f6',
   'Concluída': '#00FF88',
 };
 
 const statusBg: Record<string, string> = {
-  'Agendada': '#6b728020',
+  'Agendada': '#F59E0B20',
   'Em Andamento': '#3b82f620',
   'Concluída': '#00FF8820',
 };
@@ -35,11 +35,12 @@ export function MeetingCard({ meeting, onPress }: MeetingCardProps) {
         marginBottom: 16,
         borderWidth: 1,
         borderColor: '#2a2a2a',
+        overflow: 'hidden',
       }}
     >
       {/* Accent left border */}
       <View style={{ flexDirection: 'row' }}>
-        <View style={{ width: 4, backgroundColor: accentColor, borderTopLeftRadius: 20, borderBottomLeftRadius: 20 }} />
+        <View style={{ width: 4, backgroundColor: accentColor }} />
 
         <View style={{ flex: 1, padding: 18 }}>
           {/* Status badge */}
