@@ -12,6 +12,7 @@
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
     "@expo/metro-runtime": "~6.1.2",
+    "@react-native-community/datetimepicker": "^8.4.4",
     "@supabase/supabase-js": "^2.99.2",
     "expo": "^54.0.33",
     "expo-av": "~16.0.8",

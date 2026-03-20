@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -155,6 +155,8 @@ export default function MeetingDetails() {
   // Recording
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [activeRecording, setActiveRecording] = useState<Audio.Recording | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Data
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
@@ -241,35 +243,43 @@ export default function MeetingDetails() {
     );
     setActiveRecording(recording);
     setRecordingState('recording');
+    setRecordingDuration(0);
+    timerRef.current = setInterval(() => {
+      setRecordingDuration(prev => prev + 1);
+    }, 1000);
   };
 
   const handlePauseRecording = async () => {
     if (!activeRecording) return;
     await activeRecording.pauseAsync();
     setRecordingState('paused');
+    if (timerRef.current) clearInterval(timerRef.current);
   };
 
   const handleResumeRecording = async () => {
     if (!activeRecording) return;
     await activeRecording.startAsync();
     setRecordingState('recording');
+    timerRef.current = setInterval(() => {
+      setRecordingDuration(prev => prev + 1);
+    }, 1000);
   };
 
   const handleStopRecording = async () => {
     if (!activeRecording) return;
-    const status = await activeRecording.getStatusAsync();
+    if (timerRef.current) clearInterval(timerRef.current);
     await activeRecording.stopAndUnloadAsync();
     const uri = activeRecording.getURI();
     setActiveRecording(null);
     setRecordingState('idle');
     if (uri && meeting) {
-      await saveRecordingToSupabase(uri, (status as any).durationMillis ?? 0);
+      await saveRecordingToSupabase(uri, recordingDuration);
     }
   };
 
   // ── Save recording ────────────────────────────────────────────────────────
 
-  const saveRecordingToSupabase = async (uri: string, durationMillis: number) => {
+  const saveRecordingToSupabase = async (uri: string, durationSeconds: number) => {
     if (!meeting) return;
     setIsUploading(true);
     try {
@@ -291,7 +301,7 @@ export default function MeetingDetails() {
           meeting_id: meeting.id,
           audio_url: publicUrl,
           file_path: filePath,
-          duration: Math.round(durationMillis / 1000),
+          duration: durationSeconds,
         })
         .select()
         .single();
@@ -601,8 +611,9 @@ export default function MeetingDetails() {
 
           <Text className="text-neutral-400 font-inter text-sm mt-3">
             {recordingState === 'idle' && 'Gravar reunião'}
-            {recordingState === 'recording' && 'Gravando...'}
-            {recordingState === 'paused' && 'Pausado'}
+            {recordingState !== 'idle' && (
+              `${recordingState === 'paused' ? '⏸ ' : '⏺ '}${Math.floor(recordingDuration / 60).toString().padStart(2, '0')}:${(recordingDuration % 60).toString().padStart(2, '0')}`
+            )}
           </Text>
         </View>
 

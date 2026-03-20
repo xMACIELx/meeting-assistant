@@ -10,6 +10,7 @@ import {
   Platform,
   Alert,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { X } from 'lucide-react-native';
 import { supabase } from '../lib/supabase';
 
@@ -27,36 +28,97 @@ const statusColors: Record<string, string> = {
   'Concluída': '#00FF88',
 };
 
+function maskDate(text: string): string {
+  const n = text.replace(/\D/g, '');
+  if (n.length > 4) return n.slice(0, 2) + '/' + n.slice(2, 4) + '/' + n.slice(4, 8);
+  if (n.length > 2) return n.slice(0, 2) + '/' + n.slice(2);
+  return n;
+}
+
+function maskTime(text: string): string {
+  const n = text.replace(/\D/g, '');
+  if (n.length > 2) return n.slice(0, 2) + ':' + n.slice(2, 4);
+  return n;
+}
+
+function parseDateWeb(text: string): string {
+  const [d, m, y] = text.split('/');
+  return `${y}-${m}-${d}`;
+}
+
 export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
   const [title, setTitle] = useState('');
-  const [date, setDate] = useState('');
-  const [time, setTime] = useState('');
+  // Mobile
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  // Web
+  const [dateText, setDateText] = useState('');
+  const [timeText, setTimeText] = useState('');
+
   const [participants, setParticipants] = useState('');
   const [summary, setSummary] = useState('');
   const [status, setStatus] = useState<string>('Agendada');
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const inputStyle = (field: string) => ({
+    ...input,
+    borderColor: errors[field] ? '#ef4444' : '#2a2a2a',
+  });
+
+  const clearError = (field: string) =>
+    setErrors(prev => ({ ...prev, [field]: '' }));
 
   const reset = () => {
     setTitle('');
-    setDate('');
-    setTime('');
     setParticipants('');
     setSummary('');
     setStatus('Agendada');
+    setSelectedDate(new Date());
+    setDateText('');
+    setTimeText('');
+    setErrors({});
   };
 
   const handleCreate = async () => {
-    if (!title.trim() || !date.trim() || !time.trim()) {
-      Alert.alert('Campos obrigatórios', 'Preencha título, data e hora.');
+    const newErrors: Record<string, string> = {};
+
+    if (!title.trim()) newErrors.title = 'Título é obrigatório';
+    if (Platform.OS === 'web') {
+      if (!dateText.trim() || dateText.length < 10) newErrors.date = 'Data é obrigatória';
+      if (!timeText.trim() || timeText.length < 5) newErrors.time = 'Hora é obrigatória';
+    }
+    if (!participants.trim()) newErrors.participants = 'Participantes é obrigatório';
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
       return;
+    }
+
+    setErrors({});
+
+    let dateStr: string;
+    let timeStr: string;
+
+    if (Platform.OS === 'web') {
+      dateStr = parseDateWeb(dateText);
+      timeStr = timeText;
+    } else {
+      dateStr = selectedDate.toISOString().split('T')[0];
+      timeStr = selectedDate.toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
     }
 
     setLoading(true);
     try {
       const { error } = await supabase.from('meetings').insert({
         title: title.trim(),
-        date: date.trim(),
-        time: time.trim(),
+        date: dateStr,
+        time: timeStr,
         status,
         participants: participants
           ? participants.split(',').map((p) => p.trim()).filter(Boolean)
@@ -125,13 +187,7 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
               marginBottom: 20,
             }}
           >
-            <Text
-              style={{
-                color: '#fff',
-                fontSize: 18,
-                fontFamily: 'Inter_700Bold',
-              }}
-            >
+            <Text style={{ color: '#fff', fontSize: 18, fontFamily: 'Inter_700Bold' }}>
               Nova Reunião
             </Text>
             <TouchableOpacity onPress={onClose}>
@@ -139,52 +195,146 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
             </TouchableOpacity>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false}>
+          <ScrollView showsVerticalScrollIndicator={false} style={{ overflow: 'visible' }}>
             {/* Título */}
             <Text style={label}>Título *</Text>
             <TextInput
-              style={input}
+              style={inputStyle('title')}
               placeholder="Nome da reunião"
               placeholderTextColor="#4b5563"
               value={title}
-              onChangeText={setTitle}
+              onChangeText={(text) => { setTitle(text); if (errors.title) clearError('title'); }}
             />
+            {errors.title ? (
+              <Text style={errMsg}>{errors.title}</Text>
+            ) : null}
 
             {/* Data e Hora */}
             <View style={{ flexDirection: 'row', gap: 12 }}>
               <View style={{ flex: 1 }}>
                 <Text style={label}>Data *</Text>
-                <TextInput
-                  style={input}
-                  placeholder="2026-03-18"
-                  placeholderTextColor="#4b5563"
-                  value={date}
-                  onChangeText={setDate}
-                  keyboardType="numbers-and-punctuation"
-                />
+                {Platform.OS === 'web' ? (
+                  <>
+                    <TextInput
+                      style={inputStyle('date')}
+                      placeholder="dd/mm/aaaa"
+                      placeholderTextColor="#4b5563"
+                      value={dateText}
+                      onChangeText={(text) => { setDateText(maskDate(text)); if (errors.date) clearError('date'); }}
+                      keyboardType="numeric"
+                      maxLength={10}
+                    />
+                    {errors.date ? <Text style={errMsg}>{errors.date}</Text> : null}
+                  </>
+                ) : (
+                  <TouchableOpacity style={input} onPress={() => setShowDatePicker(true)}>
+                    <Text style={{ color: '#fff', fontSize: 14, fontFamily: 'Inter_400Regular' }}>
+                      {selectedDate.toLocaleDateString('pt-BR')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={label}>Hora *</Text>
-                <TextInput
-                  style={input}
-                  placeholder="14:00"
-                  placeholderTextColor="#4b5563"
-                  value={time}
-                  onChangeText={setTime}
-                  keyboardType="numbers-and-punctuation"
-                />
+                {Platform.OS === 'web' ? (
+                  <>
+                    <TextInput
+                      style={inputStyle('time')}
+                      placeholder="HH:MM"
+                      placeholderTextColor="#4b5563"
+                      value={timeText}
+                      onChangeText={(text) => { setTimeText(maskTime(text)); if (errors.time) clearError('time'); }}
+                      keyboardType="numeric"
+                      maxLength={5}
+                    />
+                    {errors.time ? <Text style={errMsg}>{errors.time}</Text> : null}
+                  </>
+                ) : (
+                  <TouchableOpacity style={input} onPress={() => setShowTimePicker(true)}>
+                    <Text style={{ color: '#fff', fontSize: 14, fontFamily: 'Inter_400Regular' }}>
+                      {selectedDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
+            {showDatePicker && Platform.OS !== 'web' && (
+              <Modal transparent animationType="slide">
+                <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                  <View style={{ backgroundColor: '#1a1a1a', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                        <Text style={{ color: '#6b7280', fontSize: 15, fontFamily: 'Inter_500Medium' }}>Cancelar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                        <Text style={{ color: '#00FF88', fontSize: 15, fontFamily: 'Inter_700Bold' }}>Confirmar</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <DateTimePicker
+                      value={selectedDate}
+                      mode="date"
+                      display="spinner"
+                      locale="pt-BR"
+                      textColor="#fff"
+                      style={{ backgroundColor: '#1a1a1a' }}
+                      onChange={(_, date) => {
+                        if (date) setSelectedDate(prev => {
+                          const updated = new Date(date);
+                          updated.setHours(prev.getHours(), prev.getMinutes());
+                          return updated;
+                        });
+                      }}
+                    />
+                  </View>
+                </View>
+              </Modal>
+            )}
+
+            {showTimePicker && Platform.OS !== 'web' && (
+              <Modal transparent animationType="slide">
+                <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                  <View style={{ backgroundColor: '#1a1a1a', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <TouchableOpacity onPress={() => setShowTimePicker(false)}>
+                        <Text style={{ color: '#6b7280', fontSize: 15, fontFamily: 'Inter_500Medium' }}>Cancelar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => setShowTimePicker(false)}>
+                        <Text style={{ color: '#00FF88', fontSize: 15, fontFamily: 'Inter_700Bold' }}>Confirmar</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <DateTimePicker
+                      value={selectedDate}
+                      mode="time"
+                      display="spinner"
+                      is24Hour
+                      textColor="#fff"
+                      style={{ backgroundColor: '#1a1a1a' }}
+                      onChange={(_, date) => {
+                        if (date) setSelectedDate(prev => {
+                          const updated = new Date(prev);
+                          updated.setHours(date.getHours(), date.getMinutes());
+                          return updated;
+                        });
+                      }}
+                    />
+                  </View>
+                </View>
+              </Modal>
+            )}
+
             {/* Participantes */}
-            <Text style={label}>Participantes</Text>
+            <Text style={label}>Participantes *</Text>
             <TextInput
-              style={input}
+              style={inputStyle('participants')}
               placeholder="João, Maria, Pedro"
               placeholderTextColor="#4b5563"
               value={participants}
-              onChangeText={setParticipants}
+              onChangeText={(text) => { setParticipants(text); if (errors.participants) clearError('participants'); }}
             />
+            {errors.participants ? (
+              <Text style={errMsg}>{errors.participants}</Text>
+            ) : null}
 
             {/* Resumo */}
             <Text style={label}>Resumo</Text>
@@ -244,13 +394,7 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
                 opacity: loading ? 0.7 : 1,
               }}
             >
-              <Text
-                style={{
-                  color: '#000',
-                  fontSize: 15,
-                  fontFamily: 'Inter_700Bold',
-                }}
-              >
+              <Text style={{ color: '#000', fontSize: 15, fontFamily: 'Inter_700Bold' }}>
                 {loading ? 'Criando...' : 'Criar Reunião'}
               </Text>
             </TouchableOpacity>
@@ -269,6 +413,13 @@ const label = {
   marginTop: 16,
 } as const;
 
+const errMsg = {
+  color: '#ef4444',
+  fontSize: 11,
+  marginTop: 4,
+  fontFamily: 'Inter_400Regular',
+} as const;
+
 const input = {
   backgroundColor: '#111',
   borderRadius: 12,
@@ -279,4 +430,5 @@ const input = {
   fontFamily: 'Inter_400Regular',
   paddingHorizontal: 14,
   paddingVertical: 12,
+  marginHorizontal: 2,
 } as const;
