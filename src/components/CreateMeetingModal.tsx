@@ -13,6 +13,7 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { X } from 'lucide-react-native';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../context/AuthContext';
 
 interface Props {
   visible: boolean;
@@ -47,6 +48,7 @@ function parseDateWeb(text: string): string {
 }
 
 export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
+  const { user } = useAuth();
   const [title, setTitle] = useState('');
   // Mobile
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -116,6 +118,7 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
     setLoading(true);
     try {
       const { error } = await supabase.from('meetings').insert({
+        user_id: user?.id,
         title: title.trim(),
         date: dateStr,
         time: timeStr,

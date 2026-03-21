@@ -3,6 +3,7 @@ import { View, Text, FlatList, SafeAreaView, TouchableOpacity, ActivityIndicator
 import { useRouter } from 'expo-router';
 import { Plus } from 'lucide-react-native';
 import { supabase } from '../../src/lib/supabase';
+import { useAuth } from '../../src/context/AuthContext';
 import { MeetingCard } from '../../src/components/MeetingCard';
 import { CreateMeetingModal } from '../../src/components/CreateMeetingModal';
 
@@ -17,15 +18,18 @@ const filterActiveColors: Record<string, { bg: string; text: string; border: str
 
 export default function HistoryScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const [activeFilter, setActiveFilter] = useState('Todas');
   const [meetings, setMeetings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
 
   const loadMeetings = async () => {
+    if (!user) return;
     const { data } = await supabase
       .from('meetings')
       .select('*')
+      .eq('user_id', user.id)
       .order('date', { ascending: false });
     if (data) setMeetings(data);
     setLoading(false);

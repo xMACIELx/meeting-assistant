@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { View, Text, SafeAreaView, TouchableOpacity, ScrollView, Switch } from 'react-native';
+import { View, Text, SafeAreaView, TouchableOpacity, ScrollView, Switch, Alert } from 'react-native';
 import { User, Calendar, Bell, Mic, Shield, ChevronRight, LogOut, Info } from 'lucide-react-native';
+import { useAuth } from '../../src/context/AuthContext';
 
 interface SettingRowProps {
   icon: React.ReactNode;
@@ -78,8 +79,16 @@ function Divider() {
 }
 
 export default function SettingsScreen() {
+  const { user, profile, signOut } = useAuth();
   const [notifications, setNotifications] = useState(true);
   const [autoTranscribe, setAutoTranscribe] = useState(false);
+
+  const handleSignOut = () => {
+    Alert.alert('Sair da conta', 'Tem certeza que deseja sair?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Sair', style: 'destructive', onPress: signOut },
+    ]);
+  };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
@@ -112,11 +121,11 @@ export default function SettingsScreen() {
             <Text style={{ fontSize: 22 }}>👤</Text>
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={{ color: '#fff', fontSize: 17, fontFamily: 'Inter_600SemiBold' }}>
-              Usuário
+            <Text style={{ color: '#fff', fontSize: 17, fontFamily: 'Inter_600SemiBold' }} numberOfLines={1}>
+              {profile?.full_name ?? user?.user_metadata?.full_name ?? 'Usuário'}
             </Text>
-            <Text style={{ color: '#6b7280', fontSize: 13, fontFamily: 'Inter_400Regular', marginTop: 2 }}>
-              Conta local
+            <Text style={{ color: '#6b7280', fontSize: 13, fontFamily: 'Inter_400Regular', marginTop: 2 }} numberOfLines={1}>
+              {user?.email ?? 'Conta Google'}
             </Text>
           </View>
           <View style={{
@@ -201,7 +210,7 @@ export default function SettingsScreen() {
           <SettingRow
             icon={<LogOut size={18} color="#ef4444" />}
             label="Sair da conta"
-            onPress={() => { }}
+            onPress={handleSignOut}
             danger
           />
         </SectionCard>

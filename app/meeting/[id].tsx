@@ -26,6 +26,7 @@ import {
 } from 'lucide-react-native';
 import { StatusTracker } from '../../src/components/StatusTracker';
 import { supabase } from '../../src/lib/supabase';
+import { useAuth } from '../../src/context/AuthContext';
 import { File as ExpoFile } from 'expo-file-system';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -147,6 +148,7 @@ const generateSummaryWithGroq = async (transcription: string): Promise<string> =
 export default function MeetingDetails() {
   const { id: meetingId } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
 
   // Meeting
   const [meeting, setMeeting] = useState<MeetingRow | null>(null);
@@ -298,6 +300,7 @@ export default function MeetingDetails() {
       const { data: rec } = await supabase
         .from('recordings')
         .insert({
+          user_id: user?.id,
           meeting_id: meeting.id,
           audio_url: publicUrl,
           file_path: filePath,
@@ -360,6 +363,7 @@ export default function MeetingDetails() {
       const { data: tx } = await supabase
         .from('transcriptions')
         .insert({
+          user_id: user?.id,
           meeting_id: meeting.id,
           transcription_text: fullTranscription,
           summary,
