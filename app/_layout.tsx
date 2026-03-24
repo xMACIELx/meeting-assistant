@@ -13,6 +13,7 @@ import { View, Platform, StyleSheet, ActivityIndicator } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
+import { getCalendarPreferences } from '../src/lib/googleCalendar';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -26,10 +27,19 @@ function RootLayoutNav() {
 
     const inAuthGroup = segments[0] === 'login';
 
+    const checkOnboarding = async () => {
+      const prefs = await getCalendarPreferences(session!.user.id);
+      if (!prefs) {
+        router.replace('/onboarding');
+      } else {
+        router.replace('/(tabs)');
+      }
+    };
+
     if (!session && !inAuthGroup) {
       router.replace('/login');
     } else if (session && inAuthGroup) {
-      router.replace('/(tabs)');
+      checkOnboarding();
     }
   }, [session, authLoading, segments]);
 
@@ -45,6 +55,7 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#121212' } }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
+      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
       <Stack.Screen name="meeting/[id]" options={{ presentation: 'modal', headerShown: false }} />
     </Stack>
   );

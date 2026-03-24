@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { Meeting } from '../constants/mockData';
 import { StatusTracker } from './StatusTracker';
-import { Calendar, Clock, Users } from 'lucide-react-native';
+import { Calendar, Clock } from 'lucide-react-native';
 
 interface MeetingCardProps {
   meeting: Meeting;
@@ -90,15 +90,6 @@ export function MeetingCard({ meeting, onPress }: MeetingCardProps) {
             </View>
           </View>
 
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 16 }}>
-            <Users size={14} color="#6b7280" />
-            <Text
-              style={{ color: '#9ca3af', fontSize: 13, fontFamily: 'Inter_400Regular' }}
-              numberOfLines={1}
-            >
-              {meeting.participants.join(', ')}
-            </Text>
-          </View>
 
           {/* Divider */}
           <View style={{ height: 1, backgroundColor: '#2a2a2a', marginBottom: 16 }} />

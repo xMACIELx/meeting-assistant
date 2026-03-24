@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
-import { View, Text, SafeAreaView, TouchableOpacity, ScrollView, Switch, Alert } from 'react-native';
-import { User, Calendar, Bell, Mic, Shield, ChevronRight, LogOut, Info } from 'lucide-react-native';
+import { View, Text, SafeAreaView, TouchableOpacity, ScrollView, Switch, Alert, Modal } from 'react-native';
+import { Calendar, Bell, Mic, Shield, ChevronRight, LogOut, Info, X } from 'lucide-react-native';
 import { useAuth } from '../../src/context/AuthContext';
+import { CalendarSelector } from '../../src/components/CalendarSelector';
+import { getCalendarPreferences } from '../../src/lib/googleCalendar';
+import { supabase } from '../../src/lib/supabase';
 
 interface SettingRowProps {
   icon: React.ReactNode;
@@ -82,6 +85,7 @@ export default function SettingsScreen() {
   const { user, profile, signOut } = useAuth();
   const [notifications, setNotifications] = useState(true);
   const [autoTranscribe, setAutoTranscribe] = useState(false);
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
 
   const handleSignOut = () => {
     Alert.alert('Sair da conta', 'Tem certeza que deseja sair?', [
@@ -143,8 +147,8 @@ export default function SettingsScreen() {
           <SettingRow
             icon={<Calendar size={18} color="#4285F4" />}
             label="Google Calendar"
-            subtitle="Não conectado"
-            onPress={() => { }}
+            subtitle="Calendários sincronizados"
+            onPress={() => setShowCalendarModal(true)}
           />
           <Divider />
           <SettingRow
@@ -216,6 +220,60 @@ export default function SettingsScreen() {
         </SectionCard>
 
       </ScrollView>
+
+      <Modal visible={showCalendarModal} animationType="slide" transparent>
+        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' }}>
+          <View style={{
+            backgroundColor: '#1a1a1a',
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            maxHeight: '85%',
+          }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={{ color: '#fff', fontSize: 18, fontFamily: 'Inter_700Bold' }}>
+                Calendários
+              </Text>
+              <TouchableOpacity onPress={() => setShowCalendarModal(false)} activeOpacity={0.7}>
+                <X size={22} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {user && (
+              <CalendarSelector
+                userId={user.id}
+                accessToken={profile?.google_access_token ?? ''}
+                onSave={async () => {
+                  const newPrefs = await getCalendarPreferences(user.id);
+                  const disabledIds = (newPrefs ?? []).filter(c => !c.enabled).map(c => c.id);
+                  setShowCalendarModal(false);
+                  if (disabledIds.length > 0) {
+                    Alert.alert(
+                      'Calendários atualizados',
+                      'Deseja remover as reuniões dos calendários desmarcados?',
+                      [
+                        { text: 'Manter tudo', style: 'cancel' },
+                        {
+                          text: 'Remover',
+                          style: 'destructive',
+                          onPress: async () => {
+                            await supabase
+                              .from('meetings')
+                              .delete()
+                              .eq('user_id', user.id)
+                              .in('external_id', disabledIds);
+                          },
+                        },
+                      ]
+                    );
+                  }
+                }}
+              />
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

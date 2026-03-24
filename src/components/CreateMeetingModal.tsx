@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { X } from 'lucide-react-native';
@@ -19,6 +20,11 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onCreated: () => void;
+}
+
+interface Contact {
+  name?: string;
+  email: string;
 }
 
 const STATUS_OPTIONS = ['Agendada', 'Em Andamento', 'Concluída'] as const;
@@ -58,7 +64,12 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
   const [dateText, setDateText] = useState('');
   const [timeText, setTimeText] = useState('');
 
-  const [participants, setParticipants] = useState('');
+  // Participantes
+  const [participantQuery, setParticipantQuery] = useState('');
+  const [contactSuggestions, setContactSuggestions] = useState<Contact[]>([]);
+  const [selectedParticipants, setSelectedParticipants] = useState<Contact[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
   const [summary, setSummary] = useState('');
   const [status, setStatus] = useState<string>('Agendada');
   const [loading, setLoading] = useState(false);
@@ -74,14 +85,70 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
 
   const reset = () => {
     setTitle('');
-    setParticipants('');
     setSummary('');
     setStatus('Agendada');
     setSelectedDate(new Date());
     setDateText('');
     setTimeText('');
+    setSelectedParticipants([]);
+    setParticipantQuery('');
+    setContactSuggestions([]);
     setErrors({});
   };
+
+  const searchContacts = async (query: string) => {
+    try {
+      setLoadingSuggestions(true);
+
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('google_access_token')
+        .eq('id', currentUser!.id)
+        .single();
+
+      if (!profile?.google_access_token) return;
+
+      const urls = [
+        `https://people.googleapis.com/v1/otherContacts:search?query=${encodeURIComponent(query)}&readMask=names,emailAddresses&pageSize=5`,
+        `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(query)}&readMask=names,emailAddresses&pageSize=5`,
+      ];
+
+      for (const url of urls) {
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${profile.google_access_token}` },
+        });
+        const data = await res.json();
+
+        const results: Contact[] = (data.results ?? [])
+          .map((r: any) => ({
+            name: r.person?.names?.[0]?.displayName,
+            email: r.person?.emailAddresses?.[0]?.value,
+          }))
+          .filter((c: Contact) => c.email);
+
+        if (results.length > 0) {
+          setContactSuggestions(results);
+          return;
+        }
+      }
+
+      setContactSuggestions([]);
+    } catch (err) {
+      console.error('Erro ao buscar contatos:', err);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  };
+
+  useEffect(() => {
+    if (participantQuery.length >= 3) {
+      const timer = setTimeout(() => searchContacts(participantQuery), 300);
+      return () => clearTimeout(timer);
+    } else {
+      setContactSuggestions([]);
+    }
+  }, [participantQuery]);
 
   const handleCreate = async () => {
     const newErrors: Record<string, string> = {};
@@ -91,7 +158,6 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
       if (!dateText.trim() || dateText.length < 10) newErrors.date = 'Data é obrigatória';
       if (!timeText.trim() || timeText.length < 5) newErrors.time = 'Hora é obrigatória';
     }
-    if (!participants.trim()) newErrors.participants = 'Participantes é obrigatório';
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
@@ -117,20 +183,41 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
 
     setLoading(true);
     try {
-      const { error } = await supabase.from('meetings').insert({
-        user_id: user?.id,
-        title: title.trim(),
-        date: dateStr,
-        time: timeStr,
-        status,
-        participants: participants
-          ? participants.split(',').map((p) => p.trim()).filter(Boolean)
-          : [],
-        summary: summary.trim() || null,
-        external_id: null,
-      });
+      const { data: meeting, error } = await supabase
+        .from('meetings')
+        .insert({
+          user_id: user?.id,
+          title: title.trim(),
+          date: dateStr,
+          time: timeStr,
+          status,
+          summary: summary.trim() || null,
+          external_id: null,
+        })
+        .select()
+        .single();
 
       if (error) throw error;
+
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+
+      const allParticipants = [
+        {
+          meeting_id: meeting.id,
+          name: currentUser?.user_metadata?.full_name ?? currentUser?.email,
+          email: currentUser?.email,
+          is_app_user: true,
+          app_user_id: currentUser?.id,
+        },
+        ...selectedParticipants.map(p => ({
+          meeting_id: meeting.id,
+          name: p.name ?? p.email,
+          email: p.email,
+          is_app_user: false,
+        })),
+      ];
+
+      await supabase.from('meeting_participants').insert(allParticipants);
 
       reset();
       onClose();
@@ -327,17 +414,127 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
             )}
 
             {/* Participantes */}
-            <Text style={label}>Participantes *</Text>
+            <Text style={label}>Participantes</Text>
+
+            {/* Chips dos participantes selecionados */}
+            {selectedParticipants.length > 0 && (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                {selectedParticipants.map((p, index) => (
+                  <View key={index} style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    backgroundColor: '#00FF8820',
+                    borderRadius: 20,
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderWidth: 1,
+                    borderColor: '#00FF8840',
+                    gap: 6,
+                  }}>
+                    <Text style={{ color: '#00FF88', fontSize: 13, fontFamily: 'Inter_500Medium' }}>
+                      {p.name ?? p.email}
+                    </Text>
+                    <TouchableOpacity onPress={() => {
+                      setSelectedParticipants(prev => prev.filter((_, i) => i !== index));
+                    }}>
+                      <X size={14} color="#00FF88" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Input de busca */}
             <TextInput
-              style={inputStyle('participants')}
-              placeholder="João, Maria, Pedro"
+              style={input}
+              placeholder="Buscar por nome ou email..."
               placeholderTextColor="#4b5563"
-              value={participants}
-              onChangeText={(text) => { setParticipants(text); if (errors.participants) clearError('participants'); }}
+              value={participantQuery}
+              onChangeText={setParticipantQuery}
+              keyboardType="email-address"
+              autoCapitalize="none"
             />
-            {errors.participants ? (
-              <Text style={errMsg}>{errors.participants}</Text>
-            ) : null}
+
+            {/* Dropdown de sugestões */}
+            {contactSuggestions.length > 0 && (
+              <View style={{
+                backgroundColor: '#1a1a1a',
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: '#2a2a2a',
+                marginTop: 4,
+                overflow: 'hidden',
+              }}>
+                {contactSuggestions.map((contact, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    onPress={() => {
+                      if (!selectedParticipants.find(p => p.email === contact.email)) {
+                        setSelectedParticipants(prev => [...prev, contact]);
+                      }
+                      setParticipantQuery('');
+                      setContactSuggestions([]);
+                    }}
+                    style={{
+                      padding: 12,
+                      borderBottomWidth: index < contactSuggestions.length - 1 ? 1 : 0,
+                      borderBottomColor: '#2a2a2a',
+                    }}
+                  >
+                    {contact.name && (
+                      <Text style={{ color: '#fff', fontSize: 14, fontFamily: 'Inter_500Medium' }}>
+                        {contact.name}
+                      </Text>
+                    )}
+                    <Text style={{ color: '#6b7280', fontSize: 12, fontFamily: 'Inter_400Regular' }}>
+                      {contact.email}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+
+                {/* Opção de adicionar email digitado diretamente */}
+                {participantQuery.includes('@') && !contactSuggestions.find(c => c.email === participantQuery) && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setSelectedParticipants(prev => [...prev, { email: participantQuery }]);
+                      setParticipantQuery('');
+                      setContactSuggestions([]);
+                    }}
+                    style={{ padding: 12, borderTopWidth: 1, borderTopColor: '#2a2a2a' }}
+                  >
+                    <Text style={{ color: '#00FF88', fontSize: 13, fontFamily: 'Inter_500Medium' }}>
+                      + Adicionar "{participantQuery}"
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+
+            {/* Opção de adicionar email quando não há sugestões */}
+            {contactSuggestions.length === 0 && participantQuery.includes('@') && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedParticipants(prev => [...prev, { email: participantQuery }]);
+                  setParticipantQuery('');
+                }}
+                style={{
+                  padding: 12,
+                  marginTop: 4,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: '#2a2a2a',
+                  backgroundColor: '#111',
+                }}
+              >
+                <Text style={{ color: '#00FF88', fontSize: 13, fontFamily: 'Inter_500Medium' }}>
+                  + Adicionar "{participantQuery}"
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {loadingSuggestions && (
+              <ActivityIndicator size="small" color="#00FF88" style={{ marginTop: 8 }} />
+            )}
 
             {/* Resumo */}
             <Text style={label}>Resumo</Text>

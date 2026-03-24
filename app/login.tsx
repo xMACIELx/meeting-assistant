@@ -27,7 +27,7 @@ export default function LoginScreen() {
         options: {
           redirectTo: redirectUrl,
           scopes:
-            'openid email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
+            'openid email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/contacts.other.readonly',
           queryParams: {
             access_type: 'offline',
             prompt: 'consent',
@@ -59,6 +59,25 @@ export default function LoginScreen() {
               refresh_token,
             });
             if (sessionError) console.error('Session error:', sessionError);
+
+            // Salvar tokens do Google no profile
+            const provider_token = params.get('provider_token');
+            const provider_refresh_token = params.get('provider_refresh_token');
+
+            if (provider_token) {
+              const { data: { user } } = await supabase.auth.getUser();
+              if (user) {
+                await supabase
+                  .from('profiles')
+                  .update({
+                    google_access_token: provider_token,
+                    google_refresh_token: provider_refresh_token,
+                    google_token_expiry: new Date(Date.now() + 3600 * 1000).toISOString(),
+                  })
+                  .eq('id', user.id);
+                console.log('Google tokens salvos para:', user.email);
+              }
+            }
           } else {
             await new Promise(r => setTimeout(r, 500));
             const { data } = await supabase.auth.getSession();

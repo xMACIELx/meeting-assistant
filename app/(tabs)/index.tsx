@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Plus } from 'lucide-react-native';
 import { supabase } from '../../src/lib/supabase';
 import { useAuth } from '../../src/context/AuthContext';
+import { syncGoogleCalendar } from '../../src/lib/googleCalendar';
 import { MeetingCard } from '../../src/components/MeetingCard';
 import { CreateMeetingModal } from '../../src/components/CreateMeetingModal';
 
@@ -27,6 +28,7 @@ export default function DashboardScreen() {
   const { user } = useAuth();
   const [meetings, setMeetings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
 
   const loadMeetings = async () => {
@@ -41,8 +43,17 @@ export default function DashboardScreen() {
   };
 
   useEffect(() => {
-    loadMeetings();
-  }, []);
+    const init = async () => {
+      if (user?.id) {
+        setLoading(false);
+        setSyncing(true);
+        await syncGoogleCalendar(user.id);
+        setSyncing(false);
+        await loadMeetings();
+      }
+    };
+    init();
+  }, [user?.id]);
 
   const _d = new Date();
   const todayStr = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
@@ -80,6 +91,16 @@ export default function DashboardScreen() {
               {formatTodayFull()}
             </Text>
           </View>
+
+          {/* Indicador de sync */}
+          {syncing && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 8 }}>
+              <ActivityIndicator size="small" color="#00FF88" />
+              <Text style={{ color: '#6b7280', fontSize: 12, fontFamily: 'Inter_400Regular' }}>
+                Sincronizando com Google Calendar...
+              </Text>
+            </View>
+          )}
 
           {/* Stats row */}
           <View style={{ flexDirection: 'row', gap: 12, marginBottom: 24 }}>
