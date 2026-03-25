@@ -151,6 +151,9 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
   }, [participantQuery]);
 
   const handleCreate = async () => {
+    console.log('handleCreate chamado');
+    console.log('title:', title);
+    console.log('user:', user?.id);
     const newErrors: Record<string, string> = {};
 
     if (!title.trim()) newErrors.title = 'Título é obrigatório';
@@ -158,6 +161,8 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
       if (!dateText.trim() || dateText.length < 10) newErrors.date = 'Data é obrigatória';
       if (!timeText.trim() || timeText.length < 5) newErrors.time = 'Hora é obrigatória';
     }
+
+    console.log('errors:', JSON.stringify(newErrors));
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
@@ -173,13 +178,19 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
       dateStr = parseDateWeb(dateText);
       timeStr = timeText;
     } else {
-      dateStr = selectedDate.toISOString().split('T')[0];
+      const y = selectedDate.getFullYear();
+      const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const d = String(selectedDate.getDate()).padStart(2, '0');
+      dateStr = `${y}-${m}-${d}`;
       timeStr = selectedDate.toLocaleTimeString('pt-BR', {
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
       });
     }
+
+    console.log('dateStr:', dateStr, 'timeStr:', timeStr);
+    console.log('Tentando inserir no Supabase...');
 
     setLoading(true);
     try {
@@ -196,6 +207,8 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
         })
         .select()
         .single();
+
+      console.log('Insert resultado:', meeting, error);
 
       if (error) throw error;
 
@@ -221,10 +234,13 @@ export function CreateMeetingModal({ visible, onClose, onCreated }: Props) {
 
       reset();
       onClose();
+      console.log('Chamando onCreated...');
       onCreated();
     } catch (err: any) {
-      Alert.alert('Erro', 'Não foi possível criar a reunião.');
-      console.error(err);
+      console.error('Erro completo:', JSON.stringify(err));
+      console.error('Mensagem:', err?.message);
+      console.error('Code:', err?.code);
+      Alert.alert('Erro', err?.message ?? 'Não foi possível criar a reunião.');
     } finally {
       setLoading(false);
     }

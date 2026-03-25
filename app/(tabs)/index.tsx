@@ -45,11 +45,15 @@ export default function DashboardScreen() {
   useEffect(() => {
     const init = async () => {
       if (user?.id) {
-        setLoading(false);
-        setSyncing(true);
-        await syncGoogleCalendar(user.id);
-        setSyncing(false);
+        // 1. Carregar banco imediatamente — usuário já vê os dados
         await loadMeetings();
+
+        // 2. Sincronizar em background sem bloquear
+        setSyncing(true);
+        syncGoogleCalendar(user.id)
+          .then(() => loadMeetings())
+          .catch(console.error)
+          .finally(() => setSyncing(false));
       }
     };
     init();

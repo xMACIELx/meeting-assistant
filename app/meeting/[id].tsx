@@ -160,6 +160,9 @@ export default function MeetingDetails() {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Participants
+  const [participants, setParticipants] = useState<any[]>([]);
+
   // Data
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
   const [currentTranscription, setCurrentTranscription] = useState<TranscriptionRow | null>(null);
@@ -200,6 +203,11 @@ export default function MeetingDetails() {
       loadRecordings(data.id);
       loadCurrentTranscription(data.id);
       loadAllTranscriptions(data.id);
+      const { data: parts } = await supabase
+        .from('meeting_participants')
+        .select('name, email')
+        .eq('meeting_id', meetingId);
+      if (parts) setParticipants(parts);
     }
   };
 
@@ -513,7 +521,7 @@ export default function MeetingDetails() {
           <View className="flex-row items-start">
             <Users size={18} color="#9ca3af" style={{ marginTop: 2 }} />
             <Text className="text-neutral-300 font-inter flex-1 leading-5 ml-3">
-              {meeting.participants.join(', ')}
+              {participants.map(p => p.name ?? p.email).join(', ')}
             </Text>
           </View>
         </View>
