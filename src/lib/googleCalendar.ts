@@ -163,9 +163,18 @@ export const syncGoogleCalendar = async (userId: string): Promise<void> => {
     }
     console.log(`Sync: ${calendarIds.length} calendários para sincronizar`);
 
+    const allSyncedEventIds: string[] = [];
+
     for (const calendarId of calendarIds) {
       const events = await fetchCalendarEvents(token, calendarId);
       console.log(`Sync: ${events.length} eventos em ${calendarId}`);
+
+      // Acumular IDs válidos de todos os calendários
+      allSyncedEventIds.push(
+        ...events
+          .filter((e: any) => e.summary && (e.start?.dateTime || e.start?.date))
+          .map((e: any) => e.id)
+      );
 
       for (const event of events) {
         if (!event.start?.dateTime && !event.start?.date) continue;
@@ -224,6 +233,26 @@ export const syncGoogleCalendar = async (userId: string): Promise<void> => {
             await supabase.from('meeting_participants').insert(participants);
           }
         }
+      }
+    }
+
+    // Remover do banco eventos que não existem mais no Calendar
+    const { data: existingMeetings } = await supabase
+      .from('meetings')
+      .select('id, google_event_id')
+      .eq('user_id', userId)
+      .not('google_event_id', 'is', null);
+
+    if (existingMeetings) {
+      const toDelete = existingMeetings.filter(
+        (m: any) => !allSyncedEventIds.includes(m.google_event_id)
+      );
+      if (toDelete.length > 0) {
+        console.log(`Sync: removendo ${toDelete.length} eventos deletados do Calendar`);
+        await supabase
+          .from('meetings')
+          .delete()
+          .in('id', toDelete.map((m: any) => m.id));
       }
     }
 
